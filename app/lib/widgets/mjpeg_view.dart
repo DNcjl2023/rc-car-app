@@ -23,6 +23,21 @@ class _MjpegViewState extends State<MjpegView> {
   int _lastDisplayMs = 0;
   HttpClient? _client;
   bool _disposed = false;
+  int _retryCount = 0;
+  Timer? _retryTimer;
+
+  /// 自动重连：流断开/失败后延迟重试（退避 1s -> 3s -> 3s...）
+  void _scheduleReconnect() {
+    if (_disposed || !mounted) return;
+    _retryTimer?.cancel();
+    final delay = Duration(seconds: _retryCount < 3 ? 1 : 3);
+    _retryTimer = Timer(delay, () {
+      if (_disposed || !mounted) return;
+      _retryCount++;
+      if (mounted) setState(() => _failed = false); // 重置为加载中
+      _connect();
+    });
+  }
 
   @override
   void initState() {
@@ -33,6 +48,7 @@ class _MjpegViewState extends State<MjpegView> {
   @override
   void dispose() {
     _disposed = true;
+    _retryTimer?.cancel();
     _client?.close(force: true);
     super.dispose();
   }
@@ -43,12 +59,18 @@ class _MjpegViewState extends State<MjpegView> {
       final req = await _client!.getUrl(Uri.parse(widget.url));
       final res = await req.close();
       debugPrint('[mjpeg] connected, status=${res.statusCode}');
-      await _parse(res);
+      if (res.statusCode == 200) {
+        _retryCount = 0;
+        await _parse(res);
+      }
+      // 流断开（_parse 正常结束）→ 自动重连
+      _scheduleReconnect();
     } catch (e) {
       debugPrint('[mjpeg] connect error: $e');
       if (!_disposed && mounted) {
         setState(() => _failed = true);
       }
+      _scheduleReconnect();
     }
   }
 
