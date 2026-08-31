@@ -4,8 +4,10 @@
 #include <stdarg.h>
 #include <errno.h>
 #include <sys/socket.h>
+#include <sys/select.h>
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
+#include <esp_camera.h>
 
 // ===== L298N 电机（GPIO 12/13/14/15）=====
 #define MOTOR_L_FWD 12
@@ -14,6 +16,24 @@
 #define MOTOR_R_REV 15
 #define PWM_FREQ 20000
 #define PWM_RES 8
+
+// ===== ESP32-CAM (AI-Thinker) 摄像头引脚 =====
+#define PWDN_GPIO_NUM 32
+#define RESET_GPIO_NUM -1
+#define XCLK_GPIO_NUM 0
+#define SIOD_GPIO_NUM 26
+#define SIOC_GPIO_NUM 27
+#define Y9_GPIO_NUM 35
+#define Y8_GPIO_NUM 34
+#define Y7_GPIO_NUM 39
+#define Y6_GPIO_NUM 36
+#define Y5_GPIO_NUM 21
+#define Y4_GPIO_NUM 19
+#define Y3_GPIO_NUM 18
+#define Y2_GPIO_NUM 5
+#define VSYNC_GPIO_NUM 25
+#define HREF_GPIO_NUM 23
+#define PCLK_GPIO_NUM 22
 #define CH_LF 4
 #define CH_LR 5
 #define CH_RF 6
@@ -23,7 +43,7 @@
 const char* ap_ssid = "RC-CAR-29E0";
 const char* ap_pass = "12345678";
 const uint16_t TCP_PORT = 3333;
-const unsigned long WATCHDOG_MS = 300;
+const unsigned long WATCHDOG_MS = 500; // 500ms：视频流并发时控制帧可能成批到达(300ms+)，300ms 会误停车
 const unsigned long STA_TIMEOUT_MS = 10000;
 
 WiFiServer tcpServer(TCP_PORT);
@@ -282,6 +302,150 @@ void handleTcp() {
     feedByte((uint8_t)ctrlClient.read());
   }
 }
+// ===== 摄像头 MJPEG 流（单任务分块发送：控制优先，客户端慢丢帧）=====
+#define CAM_STREAM_PORT 81
+#define CAM_JPEG_QUALITY 18   // 画质 0-63：数值大=压缩高=帧小=帧率快（可调 12-25）
+#define CAM_FRAME_SIZE FRAMESIZE_VGA
+#define STREAM_CHUNK 2048     // 每轮控制循环最多发送字节（<= lwIP 发送缓冲，防阻塞控制）
+
+WiFiServer streamServer(CAM_STREAM_PORT);
+WiFiClient streamClient;
+bool streamHandshake = false;
+unsigned long streamHandshakeT0 = 0;
+bool camReady = false;
+
+enum { SEND_HDR, SEND_DATA, SEND_TAIL } sendStage;
+camera_fb_t* sendFb = NULL;   // 正在发送的帧
+size_t sendOff = 0;           // 帧数据发送偏移
+int sendHdrIdx = 0, sendHdrLen = 0;
+char sendHdr[64];
+const char* STREAM_TAIL = "\r\n--frame\r\n";
+int tailIdx = 0;
+unsigned long sendFbT0 = 0; // 当前帧开始发送时间（超时保护）
+
+// 非阻塞发送（MSG_DONTWAIT）：返回实际发送字节；缓冲满返回 0；错误返回 -1
+// 不用 WiFiClient.write：其内部 select 超时 1s x 10 次重试，最坏阻塞 10s 会卡死控制
+int streamSendChunk(const uint8_t* data, size_t len) {
+  int fd = streamClient.fd();
+  if (fd < 0) { Serial.println("[cam] send fd<0"); return -1; }
+  errno = 0;
+  int w = send(fd, data, len, MSG_DONTWAIT);
+  if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return 0; // 发送缓冲满
+  return w;
+}
+
+void streamDropFrame() {
+  if (sendFb) { esp_camera_fb_return(sendFb); sendFb = NULL; }
+}
+
+void initCamera() {
+  camera_config_t config;
+  config.ledc_channel = LEDC_CHANNEL_0;
+  config.ledc_timer = LEDC_TIMER_0;
+  config.pin_d0 = Y2_GPIO_NUM; config.pin_d1 = Y3_GPIO_NUM;
+  config.pin_d2 = Y4_GPIO_NUM; config.pin_d3 = Y5_GPIO_NUM;
+  config.pin_d4 = Y6_GPIO_NUM; config.pin_d5 = Y7_GPIO_NUM;
+  config.pin_d6 = Y8_GPIO_NUM; config.pin_d7 = Y9_GPIO_NUM;
+  config.pin_xclk = XCLK_GPIO_NUM; config.pin_pclk = PCLK_GPIO_NUM;
+  config.pin_vsync = VSYNC_GPIO_NUM; config.pin_href = HREF_GPIO_NUM;
+  config.pin_sccb_sda = SIOD_GPIO_NUM; config.pin_sccb_scl = SIOC_GPIO_NUM;
+  config.pin_pwdn = PWDN_GPIO_NUM; config.pin_reset = RESET_GPIO_NUM;
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size = CAM_FRAME_SIZE;
+  config.jpeg_quality = CAM_JPEG_QUALITY;
+  config.fb_count = 2; // 双缓冲：采集与发送并行
+  esp_err_t err = esp_camera_init(&config);
+  if (err == ESP_OK) {
+    camReady = true;
+    Serial.printf("[cam] ready (VGA q=%d fb=2)\n", CAM_JPEG_QUALITY);
+  } else {
+    Serial.printf("[cam] init failed 0x%x, control only\n", err);
+  }
+}
+
+void handleStream() {
+  if (!camReady) return;
+  // 1. 无活跃客户端：接受新连接 + HTTP 握手（非阻塞，3s 超时）
+  if (!streamClient || !streamClient.connected()) {
+    if (streamClient) streamClient.stop();
+    if (sendFb) { esp_camera_fb_return(sendFb); sendFb = NULL; }
+    if (streamServer.hasClient()) {
+      streamClient = streamServer.accept();
+      if (streamClient) {
+        streamClient.setNoDelay(true);
+        streamHandshake = false;
+        streamHandshakeT0 = millis();
+      }
+    } else {
+      return;
+    }
+  }
+  if (!streamHandshake) {
+    static char reqBuf[512]; static int reqIdx = 0;
+    while (streamClient.available() && reqIdx < 510) {
+      char c = (char)streamClient.read();
+      reqBuf[reqIdx++] = c;
+      if (reqIdx >= 4 && memcmp(reqBuf + reqIdx - 4, "\r\n\r\n", 4) == 0) break;
+    }
+    if (reqIdx < 4 || memcmp(reqBuf + reqIdx - 4, "\r\n\r\n", 4) != 0) {
+      if (millis() - streamHandshakeT0 > 3000) { streamClient.stop(); reqIdx = 0; }
+      return; // 等待请求完整，不阻塞控制
+    }
+    reqBuf[reqIdx] = 0; reqIdx = 0;
+    if (strstr(reqBuf, "/stream")) {
+      streamClient.print("HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n");
+      streamHandshake = true;
+    } else {
+      streamClient.print("HTTP/1.1 404 Not Found\r\n\r\n");
+      streamClient.stop();
+    }
+    return;
+  }
+  // 2. 分块发送当前帧（非阻塞 send；缓冲满保持下轮；单帧发送超 500ms 丢弃保控制）
+  if (sendFb) {
+    if (millis() - sendFbT0 > 500) { streamDropFrame(); return; }
+    switch (sendStage) {
+      case SEND_HDR:
+        if (sendHdrIdx < sendHdrLen) {
+          int n = min(sendHdrLen - sendHdrIdx, STREAM_CHUNK);
+          int w = streamSendChunk((const uint8_t*)sendHdr + sendHdrIdx, n);
+          if (w > 0) sendHdrIdx += w;
+          return;
+        }
+        sendStage = SEND_DATA;
+        return; // 下一轮进入数据阶段（避免落入帧完成逻辑）
+      case SEND_DATA:
+        if (sendOff < sendFb->len) {
+          int n = min((int)(sendFb->len - sendOff), STREAM_CHUNK);
+          int w = streamSendChunk(sendFb->buf + sendOff, n);
+          if (w > 0) sendOff += w;
+          return;
+        }
+        sendStage = SEND_TAIL;
+        return; // 下一轮进入尾部阶段
+      case SEND_TAIL:
+        if (tailIdx < 11) {
+          int w = streamSendChunk((const uint8_t*)STREAM_TAIL + tailIdx, 11 - tailIdx);
+          if (w > 0) tailIdx += w;
+          return;
+        }
+        break; // 尾部完成 → 帧完成
+    }
+    // 一帧发送完成
+    esp_camera_fb_return(sendFb);
+    sendFb = NULL;
+    return;
+  }
+  // 3. 采集新帧（阻塞~帧间隔；无客户端不采集，控制满速）
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (!fb) { Serial.println("[cam] fb_get NULL"); return; }
+  sendFb = fb;
+  sendFbT0 = millis();
+  sendHdrLen = snprintf(sendHdr, sizeof(sendHdr), "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n", fb->len);
+  sendStage = SEND_HDR; sendHdrIdx = 0; sendOff = 0; tailIdx = 0;
+}
+
 // ===== 加载 WiFi 配置 =====
 bool loadWifiConfig() {
   prefs.begin("wifi", false);
@@ -338,6 +502,7 @@ void controlTask(void* pvParameters) {
     if (g_motorRunning && (millis() - g_lastCmdMs > WATCHDOG_MS)) {
       motorsStop();
     }
+    handleStream(); // 视频帧分块发送（单任务，控制优先）
     vTaskDelay(1);
   }
 }
@@ -349,7 +514,7 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println();
-  Serial.println("===== ESP32-CAM firmware v0.9.2 (control only, core0, wifi-reconnect, reversal-protect, no-brownout) =====");
+  Serial.println("===== ESP32-CAM firmware v0.10.0 (control+video, single-task, wifi-reconnect, reversal-protect, no-brownout) =====");
 
   // 电机引脚拉低 + LEDC 配置
   pinMode(MOTOR_L_FWD, OUTPUT); digitalWrite(MOTOR_L_FWD, LOW);
@@ -363,6 +528,9 @@ void setup() {
   Serial.println("[motor] PWM ready");
 
   setupWifi();
+  initCamera();
+  streamServer.begin();
+  Serial.printf("[stream] MJPEG port %d\n", CAM_STREAM_PORT);
   udp.begin(8888);
   tcpServer.begin();
   Serial.printf("[tcp] control port %d\n", TCP_PORT);
