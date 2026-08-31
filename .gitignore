@@ -1,0 +1,22 @@
+# 独立仓库（树莓派平台）
+rc-car-platform/
+
+# PlatformIO 编译产物
+firmware/.pio/
+firmware/.vscode/
+
+# Flutter/Dart 构建产物
+app/build/
+app/.dart_tool/
+app/.idea/
+app/*.iml
+app/android/.gradle/
+app/android/local.properties
+app/ios/Pods/
+
+# 构建产物
+*.apk
+*.zip
+
+# 参考项目压缩包（保留 docs/ref 下解压源码供参考）
+docs/ref/*.zip

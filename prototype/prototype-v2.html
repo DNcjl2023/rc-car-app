@@ -1,0 +1,370 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RC Car App 原型 v2（WiFi 主 + BLE 备 + 摄像头图传）</title>
+<style>
+:root{--bg:#0a1120;--surface:#131e34;--surface2:#1a2a47;--line:#26365a;--text:#e8eefb;--muted:#8fa4c6;--accent:#3b82f6;--green:#2fce6a;--red:#ef4444;--amber:#f5a524;--violet:#8b5cf6}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{background:#060a14;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;color:var(--text)}
+.phone{width:360px;height:720px;background:var(--bg);border-radius:42px;border:10px solid #0c1424;box-shadow:0 26px 60px rgba(0,0,0,.55);position:relative;overflow:hidden;transition:width .35s ease,height .35s ease;flex:none}
+.phone.landscape{width:724px;height:404px}
+.screen{position:absolute;inset:0;display:none;flex-direction:column;padding:14px;gap:10px}
+.screen.active{display:flex}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:999px;font-size:11.5px;line-height:1.2}
+.dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+.title{font-size:17px;font-weight:700;margin:0}
+.muted{color:var(--muted);font-size:12px}
+.icon-btn{width:36px;height:36px;border-radius:11px;display:inline-flex;align-items:center;justify-content:center;background:var(--surface2);color:var(--muted);border:1px solid var(--line);cursor:pointer;flex:none;font-size:16px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;border:none;border-radius:11px;padding:8px 15px;font-size:13px;font-weight:600;color:#fff;cursor:pointer;background:var(--accent);flex:none}
+.btn.green{background:var(--green)}
+.switch{position:relative;display:inline-block;width:42px;height:24px;flex:none}
+.switch input{opacity:0;width:0;height:0;position:absolute}
+.switch .track{position:absolute;inset:0;background:#2a3a5c;border-radius:999px;transition:.2s}
+.switch .track::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#c7d3ea;transition:.2s}
+.switch input:checked + .track{background:var(--accent)}
+.switch input:checked + .track::after{transform:translateX(18px);background:#fff}
+.row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 12px;border-radius:14px;background:var(--surface);border:1px solid var(--line)}
+.card{display:flex;flex-direction:column;gap:8px;padding:13px;border-radius:14px;background:var(--surface);border:1px solid var(--line)}
+.input{background:var(--surface2);border:1px solid var(--line);color:var(--text);border-radius:10px;padding:8px 11px;font-size:13px;width:100%;outline:none}
+.slider{width:100%;accent-color:var(--accent)}
+.toast{position:absolute;left:50%;bottom:24px;transform:translateX(-50%) translateY(16px);background:#1c2b4a;border:1px solid var(--line);color:var(--text);padding:9px 16px;border-radius:999px;font-size:12.5px;font-weight:600;opacity:0;pointer-events:none;transition:.25s;z-index:30;white-space:nowrap;box-shadow:0 10px 24px rgba(0,0,0,.4)}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.tabs{display:flex;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:13px;padding:4px}
+.tab{flex:1;text-align:center;padding:7px 0;border-radius:9px;font-size:12.5px;font-weight:600;color:var(--muted);cursor:pointer}
+.tab.on{background:var(--accent);color:#fff}
+.tab .tag{font-size:10px;opacity:.8;margin-left:2px}
+.device{display:flex;align-items:center;gap:11px;padding:12px;border-radius:14px;background:var(--surface);border:1px solid var(--line)}
+.device .ico{width:40px;height:40px;border-radius:12px;background:var(--surface2);display:flex;align-items:center;justify-content:center;font-size:18px;flex:none}
+.dev-name{font-size:14px;font-weight:600}
+.scroll{flex:1;overflow:auto;min-height:0;display:flex;flex-direction:column;gap:10px}
+.hint{display:flex;gap:9px;padding:11px 12px;border-radius:14px;background:rgba(139,92,246,.08);border:1px solid rgba(139,92,246,.3);font-size:12px;color:var(--muted);line-height:1.5}
+.hint b{color:var(--text)}
+.statusbar{display:flex;align-items:center;gap:6px;padding:3px 8px;border-radius:10px;background:var(--surface);border:1px solid var(--line);flex:none;min-height:34px}
+.statusbar .left{display:flex;align-items:center;gap:7px;min-width:0;flex:1}
+.statusbar .right{display:flex;align-items:center;gap:6px;flex:none}
+.live-badge{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.4)}
+.live-badge .dot{animation:blink 1s infinite}
+@keyframes blink{50%{opacity:.2}}
+.control-body{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:8px;min-height:0;padding-top:6px}
+.joy-row{flex:1;display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;min-height:0}
+.joy-zone{flex:1;display:flex;flex-direction:column;align-items:center;gap:8px;min-width:0}
+.joy-label{font-size:13px;font-weight:700;color:var(--muted);letter-spacing:3px}
+.joy-base{width:150px;height:150px;border-radius:50%;background:radial-gradient(circle at 30% 25%,#1c2b4a,#101a30 70%);border:1.5px solid var(--line);position:relative;touch-action:none;cursor:grab;box-shadow:inset 0 6px 18px rgba(0,0,0,.45)}
+.joy-knob{position:absolute;left:50%;top:50%;width:58px;height:58px;margin:-29px 0 0 -29px;border-radius:50%;background:radial-gradient(circle at 32% 28%,#3f5f9e,#27406f 70%);border:1px solid #4d6fb3;box-shadow:0 6px 14px rgba(0,0,0,.5);transition:transform .22s cubic-bezier(.2,.8,.3,1.15)}
+.joy-knob.dragging{transition:none}
+.joy-readout{font-size:12px;color:var(--muted);min-height:16px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.joy-readout b{color:var(--text)}
+.center-col{display:flex;flex-direction:column;align-items:center;gap:8px;flex:none}
+.stop{width:82px;height:82px;border-radius:50%;border:none;background:radial-gradient(circle at 30% 25%,#ff5d5d,#c81e1e 70%);color:#fff;font-size:14px;font-weight:800;letter-spacing:1px;cursor:pointer;box-shadow:0 8px 20px rgba(239,68,68,.35);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px}
+.stop:active{transform:scale(.92)}
+.video-frame{width:min(360px,72%);height:150px;margin:0 auto;border-radius:13px;overflow:hidden;border:1.5px solid var(--line);background:#000;position:relative;flex:none;box-shadow:0 10px 26px rgba(0,0,0,.5)}
+.video-sim{width:100%;height:100%;position:relative;overflow:hidden;background:linear-gradient(180deg,#0d2233 0%,#123a4d 35%,#1c2b22 100%)}
+.video-sim .road{position:absolute;left:0;right:0;height:34%;bottom:0;background:linear-gradient(180deg,#26323d,#141b22)}
+.video-sim .lane{position:absolute;left:8%;right:8%;bottom:6%;height:2px;background:rgba(245,245,245,.5);animation:laneMove 1.2s linear infinite}
+.video-sim .lane2{animation-delay:.6s}
+@keyframes laneMove{from{transform:translateY(0)}to{transform:translateY(140px)}}
+.video-sim .mark{position:absolute;top:10px;right:10px;color:#fff;font-size:10px;background:rgba(0,0,0,.5);padding:2px 7px;border-radius:6px}
+.video-sim .corner{position:absolute;left:10px;bottom:10px;color:#cfe6ff;font-size:10px;text-shadow:0 1px 3px #000}
+.video-controls{position:absolute;left:0;right:0;bottom:0;display:flex;justify-content:flex-end;gap:6px;padding:6px 8px;z-index:6}
+.vc-btn{width:26px;height:26px;border-radius:8px;border:1px solid rgba(255,255,255,.25);background:rgba(0,0,0,.45);color:#fff;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.video-live{position:absolute;inset:0;background:#0a0f1a;display:none;flex-direction:column;align-items:center;justify-content:center;gap:8px;z-index:7}
+.video-live .big{font-size:30px}
+.video-live .txt{font-size:12.5px;color:var(--muted)}
+.video-live .txt b{color:var(--red)}
+.set-label{display:flex;justify-content:space-between;align-items:center;font-size:13.5px;font-weight:600}
+.set-val{color:var(--accent);font-weight:700;font-variant-numeric:tabular-nums;font-size:13px}
+.radio{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
+.radio input{accent-color:var(--accent)}
+.radio .tag{font-size:10.5px;padding:1px 7px;border-radius:999px;background:var(--surface2);color:var(--muted)}
+select.input{width:100%;background:var(--surface2)}
+</style></head><body><div class="phone" id="phone">
+  <div class="toast" id="toast"></div>
+
+  <!-- 连接页 -->
+  <section class="screen active" id="screen-connect">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <div class="title" style="flex:1;">连接遥控车</div>
+      <span class="pill" style="background:rgba(139,92,246,.14); color:var(--violet); border:1px solid rgba(139,92,246,.35);"><span class="dot"></span>模拟模式</span>
+    </div>
+    <div class="tabs">
+      <div class="tab on" data-tab="wifi">WiFi 主<span class="tag">推荐</span></div>
+      <div class="tab" data-tab="ble">蓝牙备</div>
+    </div>
+
+    <div class="scroll" id="panel-wifi">
+      <div class="hint"><span>📶</span><span><b>路由器模式（STA）</b><br>车已连家里 WiFi，手机连同一网络即可发现。户外可到设置里切换 AP 热点直连。</span></div>
+      <div class="device">
+        <div class="ico">🎥</div>
+        <div style="flex:1; min-width:0;">
+          <div class="dev-name">RC-CAR-3842</div>
+          <div class="muted">WiFi STA · 192.168.1.100 · 电量 87%</div>
+        </div>
+        <button class="btn green" data-connect="wifi">连接</button>
+      </div>
+      <div class="muted" style="text-align:center;">— 或手动输入 IP —</div>
+      <div class="card">
+        <div style="display:flex; gap:8px;">
+          <input class="input" id="ip-input" placeholder="192.168.4.1" value="192.168.1.100" style="flex:1;">
+          <button class="btn" id="ip-connect">连接</button>
+        </div>
+        <div class="muted">STA 模式输入局域网 IP；AP 热点模式输入 192.168.4.1</div>
+      </div>
+    </div>
+
+    <div class="scroll" id="panel-ble" style="display:none;">
+      <div class="hint"><span>🔵</span><span><b>蓝牙备用连接</b><br>WiFi 不可用时使用。仅控制、<b>无图传</b>（蓝牙带宽不够传视频）。</span></div>
+      <div class="device">
+        <div class="ico">🔵</div>
+        <div style="flex:1; min-width:0;">
+          <div class="dev-name">RC-CAR-3842 BLE</div>
+          <div class="muted">蓝牙 · 电量 87%</div>
+        </div>
+        <button class="btn green" data-connect="ble">连接</button>
+      </div>
+      <div class="muted" style="text-align:center;">扫描中…（模拟）</div>
+    </div>
+
+    <div class="row">
+      <div style="display:flex; align-items:center; gap:10px;"><span>🛜</span><div><div style="font-size:13.5px; font-weight:600;">自动重连</div><div class="muted">断线后自动重连上次设备</div></div></div>
+      <label class="switch"><input type="checkbox" checked><span class="track"></span></label>
+    </div>
+  </section>  <!-- 控制页（横屏） -->
+  <section class="screen" id="screen-control">
+    <div class="statusbar">
+      <div class="left">
+        <span class="pill" id="link-pill" style="background:rgba(59,130,246,.14); color:var(--accent); border:1px solid rgba(59,130,246,.35);"><span class="dot"></span><span id="link-label">WiFi</span></span>
+        <div style="min-width:0;">
+          <div style="font-size:12px; font-weight:700;" id="ctrl-dev-name">RC-CAR-3842</div>
+          <div class="muted" style="font-size:10px;" id="ctrl-sub">192.168.1.100 · 限速 60%</div>
+        </div>
+      </div>
+      <div class="right">
+        <span class="pill live-badge" id="live-badge" style="display:none;"><span class="dot"></span>直播中</span>
+        <span class="pill" style="background:rgba(47,206,106,.14); color:var(--green); border:1px solid rgba(47,206,106,.35); padding:2px 7px; font-size:10.5px;">🔋 <span id="battery">87%</span></span>
+        <button class="icon-btn" id="btn-settings" title="设置" style="width:30px;height:30px;font-size:14px;">⚙️</button>
+        <button class="icon-btn" id="btn-disconnect" title="断开" style="width:30px;height:30px;font-size:14px;color:var(--red);">⏻</button>
+      </div>
+    </div>
+
+    <div class="control-body">
+      <!-- 视频框：居中靠上 -->
+      <div class="video-frame" id="video-frame">
+        <div class="video-sim" id="video-sim">
+          <div class="road"></div>
+          <div class="lane"></div>
+          <div class="lane lane2"></div>
+          <span class="mark">● REC 640×480 · 15fps</span>
+          <span class="corner">模拟摄像头画面</span>
+        </div>
+        <div class="video-live" id="video-live">
+          <div class="big">📺</div>
+          <div class="txt">直播中 · <b>画面已移交抖音</b></div>
+          <div class="txt" style="font-size:11px;">本框不重复渲染，节省电量与带宽</div>
+        </div>
+        <div class="video-controls">
+          <button class="vc-btn" id="btn-live" title="直播模式">📡</button>
+        </div>
+      </div>
+
+      <div class="joy-row">
+        <div class="joy-zone">
+          <div class="joy-label">转向</div>
+          <div class="joy-base" id="joy-left"><div class="joy-knob"></div></div>
+          <div class="joy-readout" data-out="L">x <b>0.00</b> · y <b>0.00</b></div>
+        </div>
+        <div class="center-col">
+          <button class="stop" id="btn-stop">■<span style="font-size:11px;">STOP</span></button>
+          <div class="muted" style="font-size:10px;">紧急制动</div>
+        </div>
+        <div class="joy-zone">
+          <div class="joy-label">油门</div>
+          <div class="joy-base" id="joy-right"><div class="joy-knob"></div></div>
+          <div class="joy-readout" data-out="R">x <b>0.00</b> · y <b>0.00</b></div>
+        </div>
+      </div>
+    </div>
+  </section>  <!-- 设置页 -->
+  <section class="screen" id="screen-settings">
+    <div style="display:flex; align-items:center; gap:10px;">
+      <button class="icon-btn" id="btn-back">←</button>
+      <div class="title" style="flex:1;">设置</div>
+    </div>
+    <div class="scroll">
+      <div class="card">
+        <div class="set-label">WiFi 工作模式<span class="set-val" id="wifi-mode-val">STA 路由器</span></div>
+        <div class="radio"><input type="radio" name="wifi" value="sta" checked> STA 路由器（家里）<span class="tag">默认</span></div>
+        <div class="radio"><input type="radio" name="wifi" value="ap"> AP 热点（户外直连）</div>
+        <div style="display:flex; gap:8px; margin-top:4px;">
+          <input class="input" placeholder="WiFi 名称 SSID" value="RC-CAR-3842" style="flex:1;">
+          <input class="input" placeholder="密码" value="12345678" style="flex:1;">
+        </div>
+      </div>
+      <div class="card">
+        <div class="set-label">摄像头分辨率<span class="set-val">VGA 640×480</span></div>
+        <select class="input">
+          <option>QQVGA 160×120</option>
+          <option>QVGA 320×240</option>
+          <option selected>VGA 640×480（默认）</option>
+          <option>SVGA 800×600</option>
+        </select>
+        <div class="set-label">帧率<span class="set-val">15 fps</span></div>
+        <input type="range" class="slider" min="5" max="25" value="15">
+        <div class="row" style="padding:9px 12px;">
+          <div style="font-size:13px; font-weight:600;">画面镜像 / 翻转</div>
+          <label class="switch"><input type="checkbox"><span class="track"></span></label>
+        </div>
+      </div>
+      <div class="card">
+        <div class="set-label">直播模式<span class="set-val" id="live-mode-val">关</span></div>
+        <div class="muted" style="line-height:1.5;">开启后控制页摄像头框隐藏画面（显示占位），画面由抖音"屏幕直播"全屏接管。</div>
+        <label class="switch" style="align-self:flex-start;"><input type="checkbox" id="live-mode-switch"><span class="track"></span></label>
+      </div>
+      <div class="card">
+        <div class="set-label">油门限速<span class="set-val">60%</span></div>
+        <input type="range" class="slider" min="10" max="100" value="60" data-val="limit">
+        <div class="set-label">转向灵敏度<span class="set-val">标准</span></div>
+        <input type="range" class="slider" min="50" max="200" value="128" data-val="curve">
+        <div class="set-label">摇杆死区<span class="set-val">±12</span></div>
+        <input type="range" class="slider" min="0" max="50" value="12" data-val="deadzone">
+      </div>
+      <div class="card" style="border-color:rgba(239,68,68,.3);">
+        <div class="set-label">⚠️ 硬件接线备忘</div>
+        <div class="muted" style="line-height:1.6;">4 电机车：每侧 2 台交叉并联成一组。左组 → <b style="color:var(--text);">GPIO 12/13</b>（IN1/IN2），右组 → <b style="color:var(--text);">GPIO 14/15</b>（IN3/IN4），ENA/ENB 接 5V 常开，转向 = 左右差速。GPIO 12 上电需下拉。</div>
+      </div>
+    </div>
+  </section>
+</div><script>
+(function(){
+  "use strict";
+  function $(s){ return document.querySelectorAll(s)[0]; }
+  function $$(s){ return Array.prototype.slice.call(document.querySelectorAll(s)); }
+  function toast(msg){ var t=$("#toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(t._t); t._t=setTimeout(function(){ t.classList.remove("show"); },1800); }
+
+  var phone=$("#phone");
+  function showScreen(id){
+    $$(".screen").forEach(function(s){ s.classList.remove("active"); });
+    $("#"+id).classList.add("active");
+    phone.classList.toggle("landscape", id==="screen-control");
+  }
+
+  $$(".tab").forEach(function(tab){
+    tab.addEventListener("click", function(){
+      $$(".tab").forEach(function(t){ t.classList.remove("on"); });
+      tab.classList.add("on");
+      var t=tab.getAttribute("data-tab");
+      $("#panel-wifi").style.display = t==="wifi" ? "" : "none";
+      $("#panel-ble").style.display   = t==="ble" ? "" : "none";
+    });
+  });
+
+  function doConnect(link){
+    var name = link==="ble" ? "RC-CAR-3842 BLE" : "RC-CAR-3842";
+    $("#ctrl-dev-name").textContent = name;
+    $("#ctrl-sub").textContent = link==="ble" ? "蓝牙 · 限速 60%" : "192.168.1.100 · 限速 60%";
+    var pill=$("#link-pill");
+    if(link==="ble"){
+      pill.style.color="#8b5cf6"; pill.style.borderColor="rgba(139,92,246,.35)"; pill.style.background="rgba(139,92,246,.14)";
+      $("#link-label").textContent="蓝牙";
+      $("#video-frame").style.display="none";
+      $("#ctrl-sub").textContent="蓝牙 · 限速 60% · 无图传";
+    } else {
+      pill.style.color="#3b82f6"; pill.style.borderColor="rgba(59,130,246,.35)"; pill.style.background="rgba(59,130,246,.14)";
+      $("#link-label").textContent="WiFi";
+      $("#video-frame").style.display="";
+      $("#ctrl-sub").textContent="192.168.1.100 · 限速 60%";
+    }
+    showScreen("screen-control");
+    toast(link==="ble" ? "已通过蓝牙连接（无图传）" : "已通过 WiFi 连接");
+  }
+  $$("[data-connect]").forEach(function(b){
+    b.addEventListener("click", function(){ doConnect(b.getAttribute("data-connect")); });
+  });
+  $("#ip-connect").addEventListener("click", function(){
+    var ip=$("#ip-input").value.trim();
+    if(!ip){ toast("请输入 IP"); return; }
+    $("#ctrl-sub").textContent = ip + " · 限速 60%";
+    doConnect("wifi");
+    toast("已连接 " + ip);
+  });  function initJoy(baseSel, outSel){
+    var base=$(baseSel), knob=base.querySelector(".joy-knob"), out=$(outSel);
+    var R=base.offsetWidth/2;
+    function toLocal(e){
+      var r=base.getBoundingClientRect();
+      return { x: e.clientX - r.left - R, y: e.clientY - r.top - R };
+    }
+    function move(p){
+      if(!isFinite(p.x)||!isFinite(p.y)) return;
+      var d=Math.sqrt(p.x*p.x+p.y*p.y);
+      if(d>R){ p.x=p.x/d*R; p.y=p.y/d*R; d=R; }
+      knob.style.transform="translate("+p.x+"px,"+p.y+"px)";
+      var nx=(p.x/R).toFixed(2), ny=(p.y/R).toFixed(2);
+      out.innerHTML="x <b>"+nx+"</b> · y <b>"+ny+"</b>";
+    }
+    function reset(){
+      knob.classList.remove("dragging");
+      knob.style.transform="translate(0,0)";
+      out.innerHTML="x <b>0.00</b> · y <b>0.00</b>";
+    }
+    // 不依赖 setPointerCapture：按下后全局跟踪移动，任何环境都跟手
+    base.addEventListener("pointerdown", function(e){
+      e.preventDefault();
+      knob.classList.add("dragging");
+      move(toLocal(e));
+      function onMove(ev){ move(toLocal(ev)); }
+      function onUp(){
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("pointercancel", onUp);
+        reset();
+      }
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
+    });
+  }
+  initJoy("#joy-left",'[data-out="L"]');
+  initJoy("#joy-right",'[data-out="R"]');
+
+  $("#btn-stop").addEventListener("click", function(){ toast("STOP 急停（固件已刹车）"); });
+
+  $("#btn-disconnect").addEventListener("click", function(){ showScreen("screen-connect"); toast("已断开"); });
+  $("#btn-settings").addEventListener("click", function(){ showScreen("screen-settings"); });
+  $("#btn-back").addEventListener("click", function(){ showScreen("screen-control"); });
+
+  var live=false;
+  function setLive(v){
+    live=v;
+    $("#video-live").style.display = v ? "flex" : "none";
+    $("#video-sim").style.display  = v ? "none" : "";
+    $("#live-badge").style.display = v ? "" : "none";
+    var m=$("#live-mode-switch"); if(m.checked!==v) m.checked=v;
+    var vl=$("#live-mode-val"); vl.textContent = v ? "开" : "关";
+  }
+  $("#btn-live").addEventListener("click", function(){ setLive(!live); toast(live ? "直播模式：画面已移交抖音" : "已退出直播模式"); });
+  $("#live-mode-switch").addEventListener("change", function(){ setLive(this.checked); toast(live ? "直播模式已开启" : "直播模式已关闭"); });
+  $$(".slider[data-val]").forEach(function(s){
+    var label=null, key=s.getAttribute("data-val");
+    var card=s.closest(".card");
+    card.querySelectorAll(".set-label").forEach(function(l){
+      var t=l.textContent;
+      if((key==="limit"&&t.indexOf("限速")>=0)||(key==="curve"&&t.indexOf("灵敏度")>=0)||(key==="deadzone"&&t.indexOf("死区")>=0)) label=l.querySelector(".set-val");
+    });
+    s.addEventListener("input", function(){
+      if(!label) return;
+      var v=+s.value;
+      if(key==="limit") label.textContent=v+"%";
+      else if(key==="curve") label.textContent = v===128 ? "标准" : (v<128 ? "灵敏" : "平缓");
+      else label.textContent="±"+v;
+    });
+  });
+  $$('input[name="wifi"]').forEach(function(r){
+    r.addEventListener("change", function(){
+      $("#wifi-mode-val").textContent = r.value==="sta" ? "STA 路由器" : "AP 热点";
+    });
+  });
+  // 支持 ?page=control / ?page=settings 直接预览对应页面
+  var qs=location.search;
+  if(qs.indexOf("page=control")>=0){ doConnect("wifi"); }
+  else if(qs.indexOf("page=settings")>=0){ showScreen("screen-settings"); }
+})();</script>
+</body>
+</html>
