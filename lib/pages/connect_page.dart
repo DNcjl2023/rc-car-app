@@ -80,7 +80,38 @@ class _ConnectPageState extends State<ConnectPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  const SizedBox(height: 8),
+                  // 账户行：用户名 + 余额 + 登出
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.account_circle, size: 20, color: Colors.white70),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            appState.user?.username ?? '',
+                            style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        Icon(Icons.timer_outlined, size: 16, color: Colors.cyan.shade200),
+                        const SizedBox(width: 3),
+                        Text(
+                          appState.user?.unlimited == true ? '∞' : '${appState.user?.credits ?? 0}s',
+                          style: TextStyle(color: Colors.cyan.shade200, fontSize: 13, fontWeight: FontWeight.bold),
+                        ),
+                        const SizedBox(width: 10),
+                        TextButton.icon(
+                          onPressed: () async {
+                            await appState.logout();
+                            if (context.mounted) Navigator.of(context).pop();
+                          },
+                          icon: const Icon(Icons.logout, size: 16),
+                          label: const Text('登出', style: TextStyle(fontSize: 12)),
+                        ),
+                      ],
+                    ),
+                  ),
                   const Icon(Icons.sports_motorsports, size: 60, color: Colors.cyan),
                   const Text('蓝牙遥控车', textAlign: TextAlign.center,
                       style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, letterSpacing: 2)),
