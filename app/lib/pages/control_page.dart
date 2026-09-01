@@ -110,7 +110,7 @@ class _ControlPageState extends State<ControlPage> {
               child: Joystick(
                 label: 'L',
                 size: 150,
-                onChanged: (o) => _setJoystick(0, -o.dy),
+                onChanged: (o) => _setJoystick(0, o.dy),
                 child: const Icon(Icons.arrow_upward, color: Colors.white70, size: 24),
               ),
             ),
