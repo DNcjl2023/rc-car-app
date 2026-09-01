@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -15,6 +17,9 @@ class ControlPage extends StatefulWidget {
 }
 
 class _ControlPageState extends State<ControlPage> {
+  Timer? _billingTimer;
+  int _videoEpoch = 0; // 递增以重建 MjpegView，实现"重连视频"
+
   @override
   void initState() {
     super.initState();
@@ -22,10 +27,27 @@ class _ControlPageState extends State<ControlPage> {
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
     ]);
+    // 付费计时：每秒扣 1 秒；余额耗尽强制断开
+    _billingTimer = Timer.periodic(const Duration(seconds: 1), (_) => _onBillingTick());
+  }
+
+  void _onBillingTick() {
+    if (!appState.tickBilling()) {
+      // 余额耗尽
+      _billingTimer?.cancel();
+      appState.disconnect();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('余额已用完，请充值后继续')),
+        );
+        Navigator.of(context).pop();
+      }
+    }
   }
 
   @override
   void dispose() {
+    _billingTimer?.cancel();
     SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     super.dispose();
   }
@@ -66,11 +88,11 @@ class _ControlPageState extends State<ControlPage> {
                   child: _buildControls(st),
                 ),
               ),
-              // 直播切换按钮（右下角悬浮）
+              // 重连视频按钮（右下角悬浮）
               Positioned(
                 right: 16,
                 bottom: 140,
-                child: _buildLiveButton(st),
+                child: _buildReconnectVideoButton(),
               ),
             ],
           );
@@ -79,18 +101,11 @@ class _ControlPageState extends State<ControlPage> {
     );
   }
 
-  /// 全屏视频：直播中显示占位；未连接摄像头显示提示
+  /// 全屏视频：未连接摄像头显示提示
   Widget _buildVideoBackground(AppState st) {
-    if (st.liveMode) {
-      return const _VideoPlaceholder(
-        icon: Icons.live_tv,
-        title: '直播中 · 画面已移交抖音',
-        subtitle: '全屏画面由抖音接管',
-        color: Colors.redAccent,
-      );
-    }
     if (st.carHost != null && !st.simulateMode) {
-      return MjpegView(url: 'http://${st.carHost}:81/stream', fit: BoxFit.cover);
+      // ValueKey 递增即可重建并重新连接视频流
+      return MjpegView(key: ValueKey('mjpeg-$_videoEpoch'), url: 'http://${st.carHost}:81/stream', fit: BoxFit.cover);
     }
     return const _VideoPlaceholder(
       icon: Icons.videocam_off,
@@ -131,94 +146,80 @@ class _ControlPageState extends State<ControlPage> {
     );
   }
 
-  /// 顶部状态栏：半透明悬浮
+  /// 顶部状态栏：纯图标（无底），自动/手动 + 重连按钮加大
   Widget _buildStatusBar(BuildContext context, AppState st) {
-    final limit = st.controller?.speedLimitPercent ?? 80;
     final isWifi = !st.simulateMode;
-    return Container(
-      margin: const EdgeInsets.all(6),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.35),
-        borderRadius: BorderRadius.circular(20),
-      ),
+    final remain = st.billingCountdown;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       child: Row(
         children: [
-          Icon(isWifi ? Icons.wifi : Icons.science, size: 15, color: Colors.lightBlueAccent),
+          Icon(isWifi ? Icons.wifi : Icons.science, size: 18, color: Colors.lightBlueAccent),
           const SizedBox(width: 6),
-          Expanded(
-            child: Text(
-              st.deviceName,
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.white),
-              overflow: TextOverflow.ellipsis,
-            ),
+          Flexible(
+            child: Text(st.deviceName,
+                style: const TextStyle(fontSize: 12, color: Colors.white),
+                overflow: TextOverflow.ellipsis),
           ),
-          Text('限速 $limit%', style: const TextStyle(color: Colors.white70, fontSize: 11)),
           const SizedBox(width: 10),
+          Icon(Icons.timer_outlined, size: 16, color: Colors.cyan.shade200),
+          const SizedBox(width: 3),
+          Text(remain > 0 ? '${remain}s' : '∞',
+              style: TextStyle(fontSize: 12, color: Colors.cyan.shade200, fontWeight: FontWeight.bold)),
+          const SizedBox(width: 8),
           _BatteryIndicator(percent: st.batteryPercent),
-          const SizedBox(width: 6),
-          IconButton(
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsPage())),
-            icon: const Icon(Icons.settings, size: 17, color: Colors.white70),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-          ),
-          // 重连模式切换：自动（断开自动重连）/ 手动（点重连按钮）
-          GestureDetector(
+          const SizedBox(width: 8),
+          _ModeToggleButton(
+            autoReconnect: st.autoReconnect,
             onTap: () => appState.setAutoReconnect(!st.autoReconnect),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-              decoration: BoxDecoration(
-                color: (st.autoReconnect ? Colors.cyan : Colors.orange).withValues(alpha: 0.3),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                st.autoReconnect ? '自动' : '手动',
-                style: const TextStyle(fontSize: 10, color: Colors.white),
-              ),
-            ),
           ),
-          IconButton(
-            onPressed: () async {
-              // 重新连接：断开后重连同 IP（手动模式用）
+          const SizedBox(width: 6),
+          _BigIconButton(
+            icon: Icons.refresh,
+            tooltip: '重连车辆',
+            onTap: () async {
               final host = appState.carHost;
               if (host == null) return;
               await appState.disconnect();
               await appState.connectWifi(host);
             },
-            icon: const Icon(Icons.refresh, size: 17, color: Colors.white70),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
           ),
-          IconButton(
-            onPressed: () async {
+          const SizedBox(width: 6),
+          _BigIconButton(
+            icon: Icons.settings,
+            tooltip: '设置',
+            onTap: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const SettingsPage())),
+          ),
+          const SizedBox(width: 6),
+          _BigIconButton(
+            icon: Icons.link_off,
+            tooltip: '断开',
+            onTap: () async {
               await appState.disconnect();
               if (context.mounted) Navigator.of(context).pop();
             },
-            icon: const Icon(Icons.link_off, size: 17, color: Colors.white70),
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
           ),
         ],
       ),
     );
   }
 
-  /// 直播切换按钮：透明悬浮
-  Widget _buildLiveButton(AppState st) {
+  /// 重连视频信号按钮：透明悬浮
+  Widget _buildReconnectVideoButton() {
     return GestureDetector(
-      onTap: () => appState.setLiveMode(!st.liveMode),
+      onTap: () => setState(() => _videoEpoch++),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         decoration: BoxDecoration(
-          color: (st.liveMode ? Colors.red : Colors.black).withValues(alpha: 0.45),
+          color: Colors.black.withValues(alpha: 0.45),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(color: Colors.white30),
         ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(st.liveMode ? Icons.videocam : Icons.videocam_outlined, size: 15, color: Colors.white),
-          const SizedBox(width: 5),
-          Text(st.liveMode ? '退出直播' : '直播', style: const TextStyle(fontSize: 12, color: Colors.white)),
+        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(Icons.videocam, size: 15, color: Colors.white),
+          SizedBox(width: 5),
+          Text('重连视频', style: TextStyle(fontSize: 12, color: Colors.white)),
         ]),
       ),
     );
@@ -232,19 +233,19 @@ class _ControlPageState extends State<ControlPage> {
         appState.controlChanged();
       },
       child: Container(
-        width: 110,
-        height: 110,
+        width: 55,
+        height: 55,
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: (stopped ? Colors.red : Colors.red.withValues(alpha: 0.45)),
-          border: Border.all(color: Colors.red.shade400, width: 3),
-          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 16)],
+          border: Border.all(color: Colors.red.shade400, width: 2),
+          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.3), blurRadius: 10)],
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.stop, color: Colors.white, size: 40),
-            Text(stopped ? '急停中' : 'STOP', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14, letterSpacing: 2)),
+            const Icon(Icons.stop, color: Colors.white, size: 20),
+            Text(stopped ? '急停中' : 'STOP', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 9, letterSpacing: 1)),
           ],
         ),
       ),
@@ -273,6 +274,59 @@ class _VideoPlaceholder extends StatelessWidget {
           const SizedBox(height: 3),
           Text(subtitle, style: const TextStyle(fontSize: 11, color: Colors.white54)),
         ],
+      ),
+    );
+  }
+}
+
+/// 自动/手动重连切换（大按钮）
+class _ModeToggleButton extends StatelessWidget {
+  final bool autoReconnect;
+  final VoidCallback onTap;
+  const _ModeToggleButton({required this.autoReconnect, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final color = autoReconnect ? Colors.cyan : Colors.orange;
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.25),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: color.withValues(alpha: 0.6), width: 1.5),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(autoReconnect ? Icons.autorenew : Icons.touch_app, size: 18, color: color),
+          const SizedBox(width: 5),
+          Text(
+            autoReconnect ? '自动' : '手动',
+            style: const TextStyle(fontSize: 14, color: Colors.white, fontWeight: FontWeight.bold),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+/// 大号图标按钮（状态栏操作）
+class _BigIconButton extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+  const _BigIconButton({required this.icon, required this.tooltip, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      onPressed: onTap,
+      icon: Icon(icon, size: 26, color: Colors.white),
+      tooltip: tooltip,
+      style: IconButton.styleFrom(
+        backgroundColor: Colors.black.withValues(alpha: 0.35),
+        padding: const EdgeInsets.all(10),
+        minimumSize: const Size(46, 46),
       ),
     );
   }

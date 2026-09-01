@@ -190,7 +190,7 @@ class _MjpegViewState extends State<MjpegView> {
         fit: widget.fit,
         gaplessPlayback: true,
 
-        errorBuilder: (_, __, ___) => Container(
+        errorBuilder: (_, _, _) => Container(
           color: Colors.black,
           alignment: Alignment.center,
           child: const Text('帧解码失败', style: TextStyle(color: Colors.redAccent, fontSize: 12)),

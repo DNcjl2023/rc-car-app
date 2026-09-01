@@ -7,6 +7,8 @@ import 'protocol/rc_protocol.dart';
 import 'transport/car_transport.dart';
 import 'transport/mock_transport.dart';
 import 'transport/wifi_transport.dart';
+import 'models/user.dart';
+import 'services/auth_service.dart';
 
 /// App 阶段
 enum AppPhase { idle, connecting, connected, error }
@@ -15,8 +17,9 @@ enum AppPhase { idle, connecting, connected, error }
 class AppState extends ChangeNotifier {
   bool simulateMode = true; // 模拟模式开关（开发用）
   bool autoReconnect = true;
-  bool liveMode = false; // 直播模式：视频画面移交抖音，本框隐藏
   String? carHost; // 车 IP（视频流地址用）
+  User? user; // 当前登录用户
+  int billingCountdown = 0; // 剩余控制秒数倒计时显示（0=未计时）
 
   AppPhase phase = AppPhase.idle;
   String? errorMessage;
@@ -91,9 +94,52 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void setLiveMode(bool v) {
-    liveMode = v;
+  bool get isLoggedIn => user != null;
+
+  /// 登录（成功后可选连接页面自动进入）
+  Future<String?> login(String username, String password) async {
+    final u = await authService.login(username.trim(), password);
+    if (u == null) return '用户名或密码错误';
+    user = u;
     notifyListeners();
+    return null;
+  }
+
+  /// 注册
+  Future<String?> register(String username, String password, String email) async {
+    final err = await authService.register(username.trim(), password, email.trim());
+    if (err == null) {
+      // 注册成功后自动登录
+      return login(username.trim(), password);
+    }
+    return err;
+  }
+
+  Future<void> logout() async {
+    await authService.logout();
+    user = null;
+    billingCountdown = 0;
+    notifyListeners();
+  }
+
+  /// 恢复会话（启动时）
+  Future<void> restoreSession() async {
+    user = await authService.restoreSession();
+    notifyListeners();
+  }
+
+  /// 计费扣秒（控制页每秒调用；admin 无限；余额耗尽返回 false 需断开）
+  bool tickBilling() {
+    final u = user;
+    if (u == null || u.unlimited) {
+      billingCountdown = 0;
+      return true;
+    }
+    if (u.credits <= 0) return false;
+    user = u.copyWith(credits: u.credits - 1);
+    billingCountdown = u.credits - 1;
+    notifyListeners();
+    return true;
   }
 
   Future<void> disconnect() async {
