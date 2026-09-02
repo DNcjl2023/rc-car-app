@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../app_state.dart';
 import 'control_page.dart';
+import 'recharge_page.dart';
 
 /// 连接页：WiFi 连接（主）+ 配网 + 模拟模式（开发用）
 class ConnectPage extends StatefulWidget {
@@ -102,9 +103,14 @@ class _ConnectPageState extends State<ConnectPage> {
                         ),
                         const SizedBox(width: 10),
                         TextButton.icon(
+                          onPressed: () => Navigator.of(context)
+                              .push(MaterialPageRoute(builder: (_) => const RechargePage())),
+                          icon: const Icon(Icons.add_circle_outline, size: 16, color: Colors.greenAccent),
+                          label: const Text('充值', style: TextStyle(fontSize: 12, color: Colors.greenAccent)),
+                        ),
+                        TextButton.icon(
                           onPressed: () async {
-                            await appState.logout();
-                            if (context.mounted) Navigator.of(context).pop();
+                            await appState.logout(); // home 根路由自动切回登录页
                           },
                           icon: const Icon(Icons.logout, size: 16),
                           label: const Text('登出', style: TextStyle(fontSize: 12)),
@@ -112,9 +118,7 @@ class _ConnectPageState extends State<ConnectPage> {
                       ],
                     ),
                   ),
-                  const Icon(Icons.sports_motorsports, size: 60, color: Colors.cyan),
-                  const Text('蓝牙遥控车', textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, letterSpacing: 2)),
+                  const Center(child: Image(image: AssetImage('assets/logo.png'), width: 96, height: 96)),
                   const SizedBox(height: 8),
                   // 模式切换
                   SegmentedButton<bool>(
