@@ -1,0 +1,14 @@
+# Normalize line endings across Windows/macOS/Linux
+* text=auto
+
+# Binary assets
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.apk binary
+*.ipa binary
+*.zip binary
+*.pdf binary
