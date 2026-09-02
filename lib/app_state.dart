@@ -128,6 +128,14 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// 充值到账（秒）
+  void addCredits(int seconds) {
+    final u = user;
+    if (u == null || u.unlimited) return;
+    user = u.copyWith(credits: u.credits + seconds);
+    notifyListeners();
+  }
+
   /// 计费扣秒（控制页每秒调用；admin 无限；余额耗尽返回 false 需断开）
   bool tickBilling() {
     final u = user;

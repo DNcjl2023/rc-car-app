@@ -42,9 +42,8 @@ class _LoginPageState extends State<LoginPage> {
       _busy = false;
       _error = err;
     });
-    if (err == null) {
-      Navigator.of(context).pushReplacementNamed('/connect');
-    }
+    // 登录成功：home 根路由的 AnimatedBuilder 会自动切换到连接页（无需手动导航）
+    // 登出同理自动回到登录页，避免路由栈空导致黑屏
   }
 
   @override
