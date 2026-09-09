@@ -1,0 +1,6 @@
+.pio/
+src/*.bak*
+src/*bak*
+scripts/ctl_log.txt
+scripts/proxy_err.txt
+scripts/proxy_out.txt

@@ -40,16 +40,21 @@
 #define CH_RR 7
 
 // ===== 网络配置 =====
-const char* ap_ssid = "RC-CAR-29E0";
+char ap_ssid[16];          // 由 eFuse MAC 自动生成（RC-CAR-XXXX），setup 时赋值
 const char* ap_pass = "12345678";
 const uint16_t TCP_PORT = 3333;
+const uint16_t DISCOVERY_PORT = 8889;          // 设备发现 UDP 广播端口
 const unsigned long WATCHDOG_MS = 500; // 500ms：视频流并发时控制帧可能成批到达(300ms+)，300ms 会误停车
 const unsigned long STA_TIMEOUT_MS = 10000;
+const unsigned long DISCOVERY_INTERVAL_MS = 10000; // 每 10s 广播一次设备发现帧
 
 WiFiServer tcpServer(TCP_PORT);
 WiFiUDP udp;
-IPAddress logIp(192, 168, 0, 116); // 电脑 IP // 电脑 IP
+IPAddress logIp(192, 168, 0, 116); // 电脑 IP
 const uint16_t LOG_PORT = 8888;
+
+// ===== 设备唯一 ID：12 位大写十六进制（eFuse MAC），App 用其识别/命名车辆 =====
+char g_deviceId[13];
 
 // 低频日志经 UDP 回传（电脑实时观察；控制帧高频日志不走 UDP）
 void udpSend(const char* msg) {
@@ -69,6 +74,38 @@ unsigned long g_lastCmdMs = 0;
 // ===== 配网存储 =====
 char cfgSsid[33] = "";
 char cfgPass[65] = "";
+
+// ===== 由 eFuse MAC 派生设备身份（deviceId + AP SSID）=====
+void deriveIdentity() {
+  uint64_t mac = ESP.getEfuseMac() & 0xFFFFFFFFFFFFULL; // 低 48 位为 MAC
+  snprintf(g_deviceId, sizeof(g_deviceId), "%012llX", (unsigned long long)mac);
+  uint16_t tail = (uint16_t)(mac & 0xFFFF);
+  snprintf(ap_ssid, sizeof(ap_ssid), "RC-CAR-%04X", tail);
+  Serial.printf("[id] deviceId=%s ap_ssid=%s\n", g_deviceId, ap_ssid);
+}
+
+// ===== 设备发现广播：向局域网广播 deviceId + IP，供 App 自动发现 =====
+void broadcastDiscover() {
+  IPAddress self, bcast;
+  if (WiFi.getMode() & WIFI_STA) {
+    if (WiFi.status() != WL_CONNECTED) return; // STA 未连接不广播
+    self = WiFi.localIP();
+    IPAddress ip = WiFi.localIP(), mask = WiFi.subnetMask();
+    bcast = IPAddress((uint8_t)((ip[0] & mask[0]) | (~mask[0] & 0xFF)),
+                      (uint8_t)((ip[1] & mask[1]) | (~mask[1] & 0xFF)),
+                      (uint8_t)((ip[2] & mask[2]) | (~mask[2] & 0xFF)),
+                      (uint8_t)((ip[3] & mask[3]) | (~mask[3] & 0xFF)));
+  } else {
+    self = WiFi.softAPIP();
+    bcast = IPAddress(255, 255, 255, 255); // AP 模式全局广播
+  }
+  char msg[64];
+  snprintf(msg, sizeof(msg), "RC-DISCOVER %s %s", g_deviceId, self.toString().c_str());
+  udp.beginPacket(bcast, DISCOVERY_PORT);
+  udp.write((const uint8_t*)msg, strlen(msg));
+  udp.endPacket();
+  Serial.printf("[disc] %s -> %s\n", msg, bcast.toString().c_str());
+}
 
 // ===== CRC8（多项式 0x07，初值 0x00）=====
 uint8_t crc8(const uint8_t* data, size_t len) {
@@ -483,6 +520,7 @@ void setupWifi() {
     if (WiFi.status() == WL_CONNECTED) {
       WiFi.setSleep(false); // 禁用省电，降低控制延迟
       Serial.printf("[wifi] STA connected, IP %s, RSSI %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      broadcastDiscover(); // 联网成功后立即广播 设备ID + IP
       return;
     }
     Serial.println("[wifi] STA failed, fallback to AP");
@@ -490,10 +528,13 @@ void setupWifi() {
   WiFi.mode(WIFI_AP);
   WiFi.softAP(ap_ssid, ap_pass);
   Serial.printf("[wifi] AP '%s' IP %s\n", ap_ssid, WiFi.softAPIP().toString().c_str());
+  delay(200); // 等 AP 就绪再广播
+  broadcastDiscover();
 }
 
 // ===== 控制任务（固定 Core 0）：处理控制指令 + 看门狗 =====
 void controlTask(void* pvParameters) {
+  unsigned long lastDiscMs = 0;
   for (;;) {
     while (Serial.available()) {
       feedByte((uint8_t)Serial.read());
@@ -501,6 +542,10 @@ void controlTask(void* pvParameters) {
     handleTcp();
     if (g_motorRunning && (millis() - g_lastCmdMs > WATCHDOG_MS)) {
       motorsStop();
+    }
+    if (millis() - lastDiscMs > DISCOVERY_INTERVAL_MS) {
+      lastDiscMs = millis();
+      broadcastDiscover();
     }
     handleStream(); // 视频帧分块发送（单任务，控制优先）
     vTaskDelay(1);
@@ -514,7 +559,9 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println();
-  Serial.println("===== ESP32-CAM firmware v0.10.0 (control+video, single-task, wifi-reconnect, reversal-protect, no-brownout) =====");
+  Serial.println("===== ESP32-CAM firmware v0.11.0 (control+video, single-task, AP-provision, STA discover) =====");
+  deriveIdentity();     // 生成设备 ID + AP SSID（须在 setupWifi 前）
+  udp.begin(LOG_PORT);  // 绑定 UDP，供日志 + 设备发现广播使用
 
   // 电机引脚拉低 + LEDC 配置
   pinMode(MOTOR_L_FWD, OUTPUT); digitalWrite(MOTOR_L_FWD, LOW);
@@ -531,7 +578,6 @@ void setup() {
   initCamera();
   streamServer.begin();
   Serial.printf("[stream] MJPEG port %d\n", CAM_STREAM_PORT);
-  udp.begin(8888);
   tcpServer.begin();
   Serial.printf("[tcp] control port %d\n", TCP_PORT);
   g_lastCmdMs = millis();
