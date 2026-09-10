@@ -510,6 +510,7 @@ void setupWifi() {
   if (hasCfg) {
     Serial.printf("[wifi] STA connecting to %s ...\n", cfgSsid);
     WiFi.mode(WIFI_STA);
+    udp.begin(LOG_PORT); // 网络栈就绪后再绑定 UDP（须在 WiFi.mode 之后）
     WiFi.begin(cfgSsid, cfgPass);
     unsigned long t0 = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - t0 < STA_TIMEOUT_MS) {
@@ -527,6 +528,7 @@ void setupWifi() {
   }
   WiFi.mode(WIFI_AP);
   WiFi.softAP(ap_ssid, ap_pass);
+  udp.begin(LOG_PORT); // 网络栈就绪后再绑定 UDP（须在 WiFi.mode 之后）
   Serial.printf("[wifi] AP '%s' IP %s\n", ap_ssid, WiFi.softAPIP().toString().c_str());
   delay(200); // 等 AP 就绪再广播
   broadcastDiscover();
@@ -559,9 +561,8 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println();
-  Serial.println("===== ESP32-CAM firmware v0.11.0 (control+video, single-task, AP-provision, STA discover) =====");
+  Serial.println("===== ESP32-CAM firmware v0.11.1 (control+video, single-task, AP-provision, STA discover) =====");
   deriveIdentity();     // 生成设备 ID + AP SSID（须在 setupWifi 前）
-  udp.begin(LOG_PORT);  // 绑定 UDP，供日志 + 设备发现广播使用
 
   // 电机引脚拉低 + LEDC 配置
   pinMode(MOTOR_L_FWD, OUTPUT); digitalWrite(MOTOR_L_FWD, LOW);
