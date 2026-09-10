@@ -533,7 +533,7 @@ void setupWifi() {
   }
 
   // 已配网：AP+STA 共存。上电先开 60s 配网窗口（便于改网/转手），
-  // 同时后台连 STA；窗口结束后若 STA 已连上则关闭 AP 恢复性能。
+  // 同时后台连 STA；STA 一旦连上立即关闭 AP，窗口仅用于等待 STA。
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(ap_ssid, ap_pass);
   udp.begin(LOG_PORT); // 网络栈就绪后再绑定 UDP（须在 WiFi.mode 之后）
@@ -564,21 +564,14 @@ void controlTask(void* pvParameters) {
     unsigned long now = millis();
     bool staUp = (WiFi.status() == WL_CONNECTED);
 
-    if (g_apState == AP_WINDOW && now - g_apStateMs > AP_WINDOW_MS) {
-      if (staUp) {
-        g_apState = AP_OFF; g_apStateMs = now;
-        WiFi.softAPdisconnect(true);
-        udp.begin(LOG_PORT); // 关闭 AP 后重绑 UDP
-        Serial.println("[wifi] AP window closed (STA connected)");
-      } else {
-        g_apState = AP_HOLD; g_apStateMs = now;
-        Serial.println("[wifi] STA not connected -> keep AP open");
-      }
-    } else if (g_apState == AP_HOLD && staUp) {
+    if ((g_apState == AP_WINDOW || g_apState == AP_HOLD) && staUp) {
       g_apState = AP_OFF; g_apStateMs = now;
       WiFi.softAPdisconnect(true);
-      udp.begin(LOG_PORT);
-      Serial.println("[wifi] STA connected -> AP closed");
+      udp.begin(LOG_PORT); // 关闭 AP 后重绑 UDP
+      Serial.println("[wifi] STA connected -> AP closed immediately");
+    } else if (g_apState == AP_WINDOW && now - g_apStateMs > AP_WINDOW_MS) {
+      g_apState = AP_HOLD; g_apStateMs = now;
+      Serial.println("[wifi] STA not connected -> keep AP open");
     } else if (g_apState == AP_OFF) {
       // STA 长时间掉线：重开 AP 窗口，避免车辆失联后再也配不上网
       if (!staUp) {
@@ -621,7 +614,7 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println();
-  Serial.println("===== ESP32-CAM firmware v0.12.0 (control+video, single-task, AP-provision, STA discover) =====");
+  Serial.println("===== ESP32-CAM firmware v0.12.1 (control+video, single-task, AP-provision, STA discover) =====");
   deriveIdentity();     // 生成设备 ID + AP SSID（须在 setupWifi 前）
 
   // 电机引脚拉低 + LEDC 配置
