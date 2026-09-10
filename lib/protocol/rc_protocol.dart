@@ -1,12 +1,14 @@
+import 'dart:convert';
+
 // 第 4 轮协议：BLE 通信协议（App <-> ESP32）
 // 统一 7 字节帧：[AA][55][Type][D0][D1][D2][CRC8]
 
 /// 帧类型
 class RcFrameType {
   static const int control = 0x01; // 摇杆控制（App -> 车）
-  static const int config = 0x02;  // 参数配置（App -> 车）
+  static const int config = 0x02; // 参数配置（App -> 车）
   static const int command = 0x03; // 命令（App -> 车）
-  static const int status = 0x11;  // 状态上报（车 -> App）
+  static const int status = 0x11; // 状态上报（车 -> App）
 }
 
 /// 命令 ID（Type=0x03 的 D0）
@@ -109,8 +111,8 @@ List<int> statusFrame(int batteryPercent, int voltageMv) {
 
 /// 配网帧（Type 0x04，变长）：AA 55 04 [ssid_len][ssid][pass_len][pass][crc]
 List<int> buildProvisionFrame(String ssid, String password) {
-  final ssidBytes = ssid.codeUnits;
-  final passBytes = password.codeUnits;
+  final ssidBytes = utf8.encode(ssid);
+  final passBytes = utf8.encode(password);
   final body = <int>[
     0xAA, 0x55, RcFrameType.control + 3, // 0x04
     ssidBytes.length,

@@ -1,71 +1,68 @@
 import 'package:flutter/material.dart';
 
+import 'provision_wifi_page.dart';
+import 'device_selection_page.dart';
+
 import '../app_state.dart';
 import 'control_page.dart';
 import 'recharge_page.dart';
 
-/// 连接页：WiFi 连接（主）+ 配网 + 模拟模式（开发用）
+/// 连接首页只展示教程；配网和车辆选择使用独立页面。
 class ConnectPage extends StatefulWidget {
-  const ConnectPage({super.key});
+  const ConnectPage({super.key, this.state});
+
+  final AppState? state;
 
   @override
   State<ConnectPage> createState() => _ConnectPageState();
 }
 
 class _ConnectPageState extends State<ConnectPage> {
-  // 默认 IP 可用 --dart-define=DEFAULT_IP=xxx 覆盖（测试/联调用），默认 192.168.4.1（AP 配网模式）
-  static const _defaultIp = String.fromEnvironment('DEFAULT_IP', defaultValue: '192.168.4.1');
-  final _ipCtrl = TextEditingController(text: _defaultIp);
-  final _apIpCtrl = TextEditingController(text: '192.168.4.1');
-  final _ssidCtrl = TextEditingController();
-  final _passCtrl = TextEditingController();
+  AppState get state => widget.state ?? appState;
 
   @override
-  void dispose() {
-    _ipCtrl.dispose();
-    _apIpCtrl.dispose();
-    _ssidCtrl.dispose();
-    _passCtrl.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    state.startDiscovery();
   }
 
-  Future<void> _connectWifi() async {
-    final ip = _ipCtrl.text.trim();
-    if (ip.isEmpty) {
-      _toast('请输入 IP');
-      return;
+  Future<void> _openProvisioning({bool restart = false}) async {
+    if (restart) {
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('重新配网前，请手动重启小车'),
+          content: const Text(
+            '请先将小车断电再上电，然后在手机 Wi‑Fi 设置中连接 RC-CAR-XXXX 热点。'
+            '\n若小车仍连接旧 Wi‑Fi、没有出现热点，请先在车辆选择页删除小车，清除旧配网信息。'
+            '\n确认手机已连接小车热点后，再继续。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('我已重启并连接热点'),
+            ),
+          ],
+        ),
+      );
+      if (proceed != true || !mounted) return;
     }
-    await appState.connectWifi(ip);
-    if (!mounted) return;
-    if (appState.isConnected) {
-      Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ControlPage()));
-    }
+    await Navigator.of(
+      context,
+    ).push(MaterialPageRoute(builder: (_) => ProvisionWifiPage(state: state)));
   }
 
   Future<void> _connectMock() async {
-    await appState.connectMock();
+    await state.connectMock();
     if (!mounted) return;
-    if (appState.isConnected) {
-      Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ControlPage()));
+    if (state.isConnected) {
+      Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => const ControlPage()));
     }
-  }
-
-  Future<void> _provision() async {
-    final ssid = _ssidCtrl.text.trim();
-    final pass = _passCtrl.text;
-    if (ssid.isEmpty) {
-      _toast('请输入 WiFi 名称');
-      return;
-    }
-    final ok = await appState.provisionWifi(_apIpCtrl.text.trim(), ssid, pass);
-    if (!mounted) return;
-    _toast(ok ? '配网成功！车已保存 WiFi 并重启，请把手机连回 $ssid' : '配网失败，请检查后重试');
-  }
-
-  void _toast(String msg) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(msg)));
   }
 
   @override
@@ -73,58 +70,35 @@ class _ConnectPageState extends State<ConnectPage> {
     return Scaffold(
       body: SafeArea(
         child: AnimatedBuilder(
-          animation: appState,
+          animation: state,
           builder: (context, _) {
-            final st = appState;
+            final st = state;
             return Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // 账户行：用户名 + 余额 + 登出
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Row(
-                      children: [
-                        const Icon(Icons.account_circle, size: 20, color: Colors.white70),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            appState.user?.username ?? '',
-                            style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        Icon(Icons.timer_outlined, size: 16, color: Colors.cyan.shade200),
-                        const SizedBox(width: 3),
-                        Text(
-                          appState.user?.unlimited == true ? '∞' : '${appState.user?.credits ?? 0}s',
-                          style: TextStyle(color: Colors.cyan.shade200, fontSize: 13, fontWeight: FontWeight.bold),
-                        ),
-                        const SizedBox(width: 10),
-                        TextButton.icon(
-                          onPressed: () => Navigator.of(context)
-                              .push(MaterialPageRoute(builder: (_) => const RechargePage())),
-                          icon: const Icon(Icons.add_circle_outline, size: 16, color: Colors.greenAccent),
-                          label: const Text('充值', style: TextStyle(fontSize: 12, color: Colors.greenAccent)),
-                        ),
-                        TextButton.icon(
-                          onPressed: () async {
-                            await appState.logout(); // home 根路由自动切回登录页
-                          },
-                          icon: const Icon(Icons.logout, size: 16),
-                          label: const Text('登出', style: TextStyle(fontSize: 12)),
-                        ),
-                      ],
+                  _buildAccountBar(),
+                  const Center(
+                    child: Image(
+                      image: AssetImage('assets/logo.png'),
+                      width: 96,
+                      height: 96,
                     ),
                   ),
-                  const Center(child: Image(image: AssetImage('assets/logo.png'), width: 96, height: 96)),
                   const SizedBox(height: 8),
-                  // 模式切换
                   SegmentedButton<bool>(
                     segments: const [
-                      ButtonSegment(value: false, label: Text('WiFi 主'), icon: Icon(Icons.wifi)),
-                      ButtonSegment(value: true, label: Text('模拟模式'), icon: Icon(Icons.science_outlined)),
+                      ButtonSegment(
+                        value: false,
+                        label: Text('WiFi 连接'),
+                        icon: Icon(Icons.wifi),
+                      ),
+                      ButtonSegment(
+                        value: true,
+                        label: Text('模拟模式'),
+                        icon: Icon(Icons.science_outlined),
+                      ),
                     ],
                     selected: {st.simulateMode},
                     onSelectionChanged: (s) => st.setSimulateMode(s.first),
@@ -135,11 +109,19 @@ class _ConnectPageState extends State<ConnectPage> {
                   if (st.errorMessage != null)
                     Padding(
                       padding: const EdgeInsets.only(top: 6),
-                      child: Text(st.errorMessage!, textAlign: TextAlign.center,
-                          style: TextStyle(color: Colors.red.shade300, fontSize: 12)),
+                      child: Text(
+                        st.errorMessage!,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.red.shade300,
+                          fontSize: 12,
+                        ),
+                      ),
                     ),
                   Expanded(
-                    child: st.simulateMode ? _buildMockPanel() : _buildWifiPanel(),
+                    child: st.simulateMode
+                        ? _buildMockPanel()
+                        : _buildWifiPanel(),
                   ),
                 ],
               ),
@@ -149,55 +131,117 @@ class _ConnectPageState extends State<ConnectPage> {
       ),
     );
   }
-  /// WiFi 面板：连接 + 配网
+
+  Widget _buildAccountBar() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        children: [
+          const Icon(Icons.account_circle, size: 20, color: Colors.white70),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              state.user?.username ?? '',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Icon(Icons.timer_outlined, size: 16, color: Colors.cyan.shade200),
+          const SizedBox(width: 3),
+          Text(
+            state.user?.unlimited == true
+                ? '∞'
+                : '${state.user?.credits ?? 0}s',
+            style: TextStyle(
+              color: Colors.cyan.shade200,
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(width: 10),
+          TextButton.icon(
+            onPressed: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const RechargePage())),
+            icon: const Icon(
+              Icons.add_circle_outline,
+              size: 16,
+              color: Colors.greenAccent,
+            ),
+            label: const Text(
+              '充值',
+              style: TextStyle(fontSize: 12, color: Colors.greenAccent),
+            ),
+          ),
+          TextButton.icon(
+            onPressed: () async => state.logout(),
+            icon: const Icon(Icons.logout, size: 16),
+            label: const Text('登出', style: TextStyle(fontSize: 12)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildWifiPanel() {
     return ListView(
       children: [
-        _hintCard('配网说明',
-            '首次使用：手机连接热点 RC-CAR-29E0（密码 12345678），IP 填 192.168.4.1，先"发送配网"把家里 WiFi 告诉车；配好后车自动连家里 WiFi，IP 填车在局域网里的地址。'),
-        const SizedBox(height: 10),
-        _card('连接车辆', [
-          _label('车 IP 地址'),
-          Row(children: [
-            Expanded(child: TextField(controller: _ipCtrl, decoration: const InputDecoration(hintText: '192.168.4.1'))),
-            const SizedBox(width: 8),
-            FilledButton(onPressed: _connectWifi, child: const Text('连接')),
-          ]),
-        ]),
-        const SizedBox(height: 10),
-        _card('配网（设置 WiFi）', [
-          _label('热点 IP'),
-          TextField(controller: _apIpCtrl, decoration: const InputDecoration(hintText: '192.168.4.1')),
-          const SizedBox(height: 8),
-          _label('家里 WiFi 名称'),
-          TextField(controller: _ssidCtrl, decoration: const InputDecoration(hintText: '输入 WiFi 名称')),
-          const SizedBox(height: 8),
-          _label('WiFi 密码'),
-          TextField(controller: _passCtrl, obscureText: true, decoration: const InputDecoration(hintText: '输入密码')),
-          const SizedBox(height: 10),
-          FilledButton.icon(
-            onPressed: _provision,
-            icon: const Icon(Icons.wifi_tethering),
-            label: const Text('发送配网（车将保存并重启）'),
-          ),
-        ]),
+        _hintCard(
+          '首次使用：先配网',
+          '1. 在手机 Wi‑Fi 设置中连接小车热点 RC-CAR-XXXX（密码 12345678）。\n'
+              '2. 点击下方“我已连接”，在下一页填写家庭 Wi‑Fi。\n'
+              '3. 发送配网后，按提示将手机切回家庭 Wi‑Fi，再选择车辆连接。',
+        ),
         const SizedBox(height: 12),
+        if (!state.provisioningCompleted)
+          FilledButton(
+            onPressed: () => _openProvisioning(),
+            child: const Text('我已连接'),
+          )
+        else ...[
+          const Text('已完成配网引导。请连接家庭 Wi‑Fi 后选择车辆。'),
+          OutlinedButton(
+            onPressed: () => _openProvisioning(restart: true),
+            child: const Text('重新配网'),
+          ),
+        ],
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => DeviceSelectionPage(state: state),
+            ),
+          ),
+          icon: const Icon(Icons.directions_car),
+          label: const Text('选择车辆'),
+        ),
       ],
     );
   }
 
   Widget _buildMockPanel() {
-    return ListView(children: [
-      _card('模拟设备（开发用）', [
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.bluetooth_connected, color: Colors.cyan),
-          title: const Text('RC-CAR-MOCK1', style: TextStyle(fontWeight: FontWeight.bold)),
-          subtitle: const Text('虚拟 ESP32 · 模拟连接'),
-          trailing: FilledButton(onPressed: _connectMock, child: const Text('连接')),
-        ),
-      ]),
-    ]);
+    return ListView(
+      children: [
+        _card('模拟设备（开发用）', [
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.bluetooth_connected, color: Colors.cyan),
+            title: const Text(
+              'RC-CAR-MOCK1',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+            subtitle: const Text('虚拟 ESP32 · 模拟连接'),
+            trailing: FilledButton(
+              onPressed: _connectMock,
+              child: const Text('连接'),
+            ),
+          ),
+        ]),
+      ],
+    );
   }
 
   Widget _hintCard(String title, String text) {
@@ -205,11 +249,21 @@ class _ConnectPageState extends State<ConnectPage> {
       color: Colors.white.withValues(alpha: 0.04),
       child: Padding(
         padding: const EdgeInsets.all(14),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 6),
-          Text(text, style: TextStyle(color: Colors.white70, fontSize: 12.5, height: 1.5)),
-        ]),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 6),
+            Text(
+              text,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 12.5,
+                height: 1.5,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -219,17 +273,15 @@ class _ConnectPageState extends State<ConnectPage> {
       color: Colors.white.withValues(alpha: 0.05),
       child: Padding(
         padding: const EdgeInsets.all(14),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
-          const SizedBox(height: 8),
-          ...children,
-        ]),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: const TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            ...children,
+          ],
+        ),
       ),
     );
   }
-
-  Widget _label(String s) => Padding(
-        padding: const EdgeInsets.only(bottom: 4),
-        child: Text(s, style: const TextStyle(fontSize: 12.5, color: Colors.white70)),
-      );
 }
