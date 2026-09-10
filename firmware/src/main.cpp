@@ -45,8 +45,9 @@ const char* ap_pass = "12345678";
 const uint16_t TCP_PORT = 3333;
 const uint16_t DISCOVERY_PORT = 8889;          // 设备发现 UDP 广播端口
 const unsigned long WATCHDOG_MS = 500; // 500ms：视频流并发时控制帧可能成批到达(300ms+)，300ms 会误停车
-const unsigned long STA_TIMEOUT_MS = 10000;
 const unsigned long DISCOVERY_INTERVAL_MS = 10000; // 每 10s 广播一次设备发现帧
+const unsigned long AP_WINDOW_MS = 60000;          // 上电后 AP 配网窗口时长：60s
+const unsigned long STA_LOST_REOPEN_MS = 30000;    // STA 掉线超过 30s 自动重开 AP 窗口
 
 WiFiServer tcpServer(TCP_PORT);
 WiFiUDP udp;
@@ -71,6 +72,13 @@ bool g_stop = false;
 bool g_motorRunning = false;
 unsigned long g_lastCmdMs = 0;
 
+// ===== AP 配网窗口状态 =====
+enum ApWindowState : uint8_t { AP_OFF, AP_WINDOW, AP_HOLD };
+ApWindowState g_apState = AP_OFF;
+unsigned long g_apStateMs = 0;   // 当前状态进入时刻
+bool g_staWasUp = false;         // STA 上一轮是否在线（上升沿广播）
+unsigned long g_staLostMs = 0;   // STA 掉线起始时刻（0=在线）
+
 // ===== 配网存储 =====
 char cfgSsid[33] = "";
 char cfgPass[65] = "";
@@ -87,17 +95,19 @@ void deriveIdentity() {
 // ===== 设备发现广播：向局域网广播 deviceId + IP，供 App 自动发现 =====
 void broadcastDiscover() {
   IPAddress self, bcast;
-  if (WiFi.getMode() & WIFI_STA) {
-    if (WiFi.status() != WL_CONNECTED) return; // STA 未连接不广播
+  if (WiFi.status() == WL_CONNECTED) {
+    // 优先广播 STA 地址（手机与车同网时可直接连）
     self = WiFi.localIP();
     IPAddress ip = WiFi.localIP(), mask = WiFi.subnetMask();
     bcast = IPAddress((uint8_t)((ip[0] & mask[0]) | (~mask[0] & 0xFF)),
                       (uint8_t)((ip[1] & mask[1]) | (~mask[1] & 0xFF)),
                       (uint8_t)((ip[2] & mask[2]) | (~mask[2] & 0xFF)),
                       (uint8_t)((ip[3] & mask[3]) | (~mask[3] & 0xFF)));
-  } else {
+  } else if (WiFi.getMode() & WIFI_AP) {
     self = WiFi.softAPIP();
     bcast = IPAddress(255, 255, 255, 255); // AP 模式全局广播
+  } else {
+    return; // 无可用网络接口
   }
   char msg[64];
   snprintf(msg, sizeof(msg), "RC-DISCOVER %s %s", g_deviceId, self.toString().c_str());
@@ -507,31 +517,35 @@ void onWifiEvent(WiFiEvent_t event) {
 void setupWifi() {
   WiFi.onEvent(onWifiEvent);
   bool hasCfg = loadWifiConfig();
-  if (hasCfg) {
-    Serial.printf("[wifi] STA connecting to %s ...\n", cfgSsid);
-    WiFi.mode(WIFI_STA);
+
+  if (!hasCfg) {
+    // 未配网：纯 AP 常开，等待 App 配网
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(ap_ssid, ap_pass);
     udp.begin(LOG_PORT); // 网络栈就绪后再绑定 UDP（须在 WiFi.mode 之后）
-    WiFi.begin(cfgSsid, cfgPass);
-    unsigned long t0 = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - t0 < STA_TIMEOUT_MS) {
-      delay(500);
-      Serial.print(".");
-    }
-    Serial.println();
-    if (WiFi.status() == WL_CONNECTED) {
-      WiFi.setSleep(false); // 禁用省电，降低控制延迟
-      Serial.printf("[wifi] STA connected, IP %s, RSSI %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
-      broadcastDiscover(); // 联网成功后立即广播 设备ID + IP
-      return;
-    }
-    Serial.println("[wifi] STA failed, fallback to AP");
+    g_apState = AP_HOLD;
+    g_apStateMs = millis();
+    Serial.printf("[wifi] no config -> AP '%s' IP %s (waiting for provisioning)\n",
+                  ap_ssid, WiFi.softAPIP().toString().c_str());
+    delay(200); // 等 AP 就绪再广播
+    broadcastDiscover();
+    return;
   }
-  WiFi.mode(WIFI_AP);
+
+  // 已配网：AP+STA 共存。上电先开 60s 配网窗口（便于改网/转手），
+  // 同时后台连 STA；窗口结束后若 STA 已连上则关闭 AP 恢复性能。
+  WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(ap_ssid, ap_pass);
   udp.begin(LOG_PORT); // 网络栈就绪后再绑定 UDP（须在 WiFi.mode 之后）
-  Serial.printf("[wifi] AP '%s' IP %s\n", ap_ssid, WiFi.softAPIP().toString().c_str());
-  delay(200); // 等 AP 就绪再广播
-  broadcastDiscover();
+  g_apState = AP_WINDOW;
+  g_apStateMs = millis();
+  Serial.printf("[wifi] AP window open %lus '%s' IP %s\n",
+                AP_WINDOW_MS / 1000, ap_ssid, WiFi.softAPIP().toString().c_str());
+  delay(200);
+  broadcastDiscover(); // 先广播 AP 地址，App 连上热点即可发现车辆
+
+  Serial.printf("[wifi] STA connecting to %s ...\n", cfgSsid);
+  WiFi.begin(cfgSsid, cfgPass); // 非阻塞；连上后由控制任务广播新 IP
 }
 
 // ===== 控制任务（固定 Core 0）：处理控制指令 + 看门狗 =====
@@ -545,6 +559,52 @@ void controlTask(void* pvParameters) {
     if (g_motorRunning && (millis() - g_lastCmdMs > WATCHDOG_MS)) {
       motorsStop();
     }
+
+    // ===== AP 配网窗口管理 =====
+    unsigned long now = millis();
+    bool staUp = (WiFi.status() == WL_CONNECTED);
+
+    if (g_apState == AP_WINDOW && now - g_apStateMs > AP_WINDOW_MS) {
+      if (staUp) {
+        g_apState = AP_OFF; g_apStateMs = now;
+        WiFi.softAPdisconnect(true);
+        udp.begin(LOG_PORT); // 关闭 AP 后重绑 UDP
+        Serial.println("[wifi] AP window closed (STA connected)");
+      } else {
+        g_apState = AP_HOLD; g_apStateMs = now;
+        Serial.println("[wifi] STA not connected -> keep AP open");
+      }
+    } else if (g_apState == AP_HOLD && staUp) {
+      g_apState = AP_OFF; g_apStateMs = now;
+      WiFi.softAPdisconnect(true);
+      udp.begin(LOG_PORT);
+      Serial.println("[wifi] STA connected -> AP closed");
+    } else if (g_apState == AP_OFF) {
+      // STA 长时间掉线：重开 AP 窗口，避免车辆失联后再也配不上网
+      if (!staUp) {
+        if (g_staLostMs == 0) g_staLostMs = now;
+        else if (now - g_staLostMs > STA_LOST_REOPEN_MS) {
+          WiFi.mode(WIFI_AP_STA);
+          WiFi.softAP(ap_ssid, ap_pass);
+          udp.begin(LOG_PORT);
+          g_apState = AP_WINDOW; g_apStateMs = now; g_staLostMs = 0;
+          Serial.println("[wifi] STA lost too long -> reopen AP window");
+          broadcastDiscover();
+        }
+      } else {
+        g_staLostMs = 0;
+      }
+    }
+
+    // STA 刚连上：立即广播一次新 IP
+    if (staUp && !g_staWasUp) {
+      WiFi.setSleep(false); // 禁用省电，降低控制延迟
+      Serial.printf("[wifi] STA connected, IP %s, RSSI %d dBm\n",
+                    WiFi.localIP().toString().c_str(), WiFi.RSSI());
+      broadcastDiscover();
+    }
+    g_staWasUp = staUp;
+
     if (millis() - lastDiscMs > DISCOVERY_INTERVAL_MS) {
       lastDiscMs = millis();
       broadcastDiscover();
@@ -561,7 +621,7 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println();
-  Serial.println("===== ESP32-CAM firmware v0.11.1 (control+video, single-task, AP-provision, STA discover) =====");
+  Serial.println("===== ESP32-CAM firmware v0.12.0 (control+video, single-task, AP-provision, STA discover) =====");
   deriveIdentity();     // 生成设备 ID + AP SSID（须在 setupWifi 前）
 
   // 电机引脚拉低 + LEDC 配置
